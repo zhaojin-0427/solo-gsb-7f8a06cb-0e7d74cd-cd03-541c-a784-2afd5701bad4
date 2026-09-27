@@ -82,6 +82,11 @@ let spkData = null;
 let spkChoices = new Map();
 let spkSrt = '';
 
+// 成片选段回溯状态：tbData 为 Traceback.traceSelections 的成功结果
+// （浏览器内计算，src/traceback.js），tbCsv 为与清单同内容的 CSV 文本（下载时加 BOM）。
+let tbData = null;
+let tbCsv = '';
+
 // 阅读时窗审计状态：raData 为 ReadAudit.auditReading 的结果（浏览器内计算，src/readaudit.js），
 // 以当前未排版输出字幕为输入；调整速度即时重算，重新生成主结果后旧结论清除。
 let raData = null;
@@ -167,6 +172,7 @@ function render(data) {
   resetPlanCompare();
   resetSync();
   resetSpeakers();
+  resetTraceback();
   applyReadAudit();
   applyWrap();
   // 重新生成主结果时清空旧排程，并按当前避让参数对新结果重算
@@ -1109,6 +1115,122 @@ async function copySpkSrt() {
   setTimeout(() => { btn.textContent = old; }, 1500);
 }
 
+// ---- 成片选段回溯（精确拼接边界拆分 + 倍速反算；逻辑在 src/traceback.js，双端通用，不请求后端） ----
+
+/** 工具条上显示当前拼接时间轴精确末端（半毫秒精度，整数终点上限向下取整）。 */
+function renderTbTotalEnd() {
+  if (!lastData || !lastData.timeline.length) {
+    $('#tbTotalEnd').textContent = '—';
+    return;
+  }
+  const last = lastData.timeline[lastData.timeline.length - 1];
+  const exact = last.outEndHalf / 2;
+  $('#tbTotalEnd').textContent = `精确末端 ${fmtNum(exact)} ms，整数终点上限 ${fmtNum(Math.floor(last.outEndHalf / 2))} ms`;
+}
+
+/** 清空旧回溯清单与视图（选段文本保留；placeholderText 为占位提示）。 */
+function resetTraceback(placeholderText) {
+  tbData = null;
+  tbCsv = '';
+  $('#tbErrorBox').hidden = true;
+  $('#tbSummary').hidden = true;
+  $('#tbSummary').innerHTML = '';
+  $('#tbDownloadBtn').disabled = true;
+  $('#tbTable tbody').innerHTML = '';
+  $('#tbTableWrap').hidden = true;
+  const ph = $('#tbPlaceholder');
+  ph.hidden = false;
+  ph.textContent = placeholderText || '主字幕结果已更新，请重新点击「回溯选段」。';
+  renderTbTotalEnd();
+}
+
+/** 成片选段错误：定位到具体行，只显示在回溯工具条内（主结果与各项下载不受影响）。 */
+function showTracebackErrors(errors) {
+  $('#tbErrorList').innerHTML = errors.map((e) => `<li><span class="loc">${
+    e.line ? `选段第 ${e.line} 行` : '成片选段'
+  }</span>${escapeHtml(e.message)}</li>`).join('');
+  $('#tbErrorCount').textContent = errors.length;
+  $('#tbErrorBox').hidden = false;
+}
+
+/**
+ * 执行回溯：解析选段（src/traceback.js），错误只显示在工具条内；
+ * 通过后按精确拼接边界拆分并依倍速反算源区间，刷新清单与 CSV 下载。
+ */
+function runTraceback() {
+  if (!lastData) return;
+  resetTraceback(); // 再次提交：旧清单立即失效
+  const text = $('#tbInput').value;
+  if (!text.trim()) {
+    showTracebackErrors([{ line: 0, message: '成片选段内容为空' }]);
+    $('#tbPlaceholder').textContent = '成片选段有误，未生成回溯清单。';
+    return;
+  }
+  const { selections, errors: parseErrors } = window.Traceback.parseSelections(text);
+  if (parseErrors.length > 0) {
+    showTracebackErrors(parseErrors);
+    $('#tbPlaceholder').textContent = '成片选段有误，未生成回溯清单。';
+    return;
+  }
+  const r = window.Traceback.traceSelections(selections, lastData.timeline);
+  if (!r.ok) {
+    const errs = r.errors && r.errors.length
+      ? r.errors
+      : [{ line: 0, message: r.message }];
+    showTracebackErrors(errs);
+    $('#tbPlaceholder').textContent = '成片选段有误，未生成回溯清单。';
+    return;
+  }
+  $('#tbErrorBox').hidden = true;
+  tbData = r;
+  tbCsv = window.Traceback.buildCsv(r.items);
+  $('#tbDownloadBtn').disabled = false;
+  $('#tbSummary').hidden = false;
+  $('#tbSummary').innerHTML =
+    `<span class="bi-ok">✓ 回溯 ${r.selectionCount} 个选段</span> · 拆出成片子区间 <b>${r.items.length}</b> 个 · `
+    + `拼接时间轴精确末端 <b>${fmtNum(r.totalEndMs)}</b> ms（整数终点上限 ${fmtNum(r.maxEndMs)} ms） · `
+    + '源端点保留四分之一毫秒，未从取整后的字幕时间反推';
+  renderTraceback();
+}
+
+/** 四分之一毫秒单位 → 精确毫秒文本（仅保留必要的 .25/.5/.75）。 */
+function fmtTbQ(quarter) {
+  return window.Traceback.formatQuarterMs(quarter);
+}
+
+/** 渲染回溯清单：按输入行及播放顺序（items 已是该顺序）。 */
+function renderTraceback() {
+  if (!tbData) return;
+  $('#tbTable tbody').innerHTML = tbData.items.map((it) => `
+    <tr>
+      <td class="num">${it.selectionLine}</td>
+      <td class="num">${it.subIndex}</td>
+      <td class="num"><b>${it.segOrder + 1}</b></td>
+      <td class="num dim">${it.segLine}</td>
+      <td><span class="tag tag-speed">${it.speed}×</span></td>
+      <td class="mono">${fmtTbQ(it.outStartQ)} → ${fmtTbQ(it.outEndQ)}</td>
+      <td class="num">${fmtTbQ(it.outEndQ - it.outStartQ)}</td>
+      <td class="mono">${fmtTbQ(it.srcStartQ)} → ${fmtTbQ(it.srcEndQ)}</td>
+      <td class="num">${fmtTbQ(it.srcEndQ - it.srcStartQ)}</td>
+    </tr>`).join('');
+  $('#tbTableWrap').hidden = false;
+  $('#tbPlaceholder').hidden = true;
+}
+
+function downloadTracebackCsv() {
+  if (!tbCsv) return;
+  // UTF-8 BOM，便于 Excel 正确识别中文编码
+  const blob = new Blob([`﻿${tbCsv}`], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'output-traceback.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ---- 阅读时窗审计（EDF；逻辑在 src/readaudit.js，双端通用，不请求后端，不改动字幕） ----
 
 /** 清空旧审计结论与视图（速度输入保留；placeholderText 为占位提示）。 */
@@ -1789,6 +1911,7 @@ $('#clearBtn').addEventListener('click', () => {
   resetPlanCompare();
   resetSync();
   resetSpeakers();
+  resetTraceback('页面已清空。');
   resetReadAudit('页面已清空。');
 });
 $('#loadSampleBtn').addEventListener('click', () => {
@@ -1938,6 +2061,19 @@ $('#spkInput').addEventListener('input', () => {
 });
 $('#spkDownloadBtn').addEventListener('click', downloadSpkSrt);
 $('#spkCopyBtn').addEventListener('click', copySpkSrt);
+
+// 成片选段回溯：提交/清空；修改选段或重新生成主结果后旧清单立即失效
+$('#tbRunBtn').addEventListener('click', runTraceback);
+$('#tbClearBtn').addEventListener('click', () => {
+  $('#tbInput').value = '';
+  resetTraceback('尚未回溯：在上方「成片选段回溯」工具条逐行输入「起始毫秒 结束毫秒」并点击「回溯选段」。');
+});
+$('#tbInput').addEventListener('input', () => {
+  if (tbData || !$('#tbErrorBox').hidden) {
+    resetTraceback('选段已修改，请重新点击「回溯选段」。');
+  }
+});
+$('#tbDownloadBtn').addEventListener('click', downloadTracebackCsv);
 // 并列裁决：逐条选定候选说话人（可改选），全部裁决后自动解除导出禁用
 document.addEventListener('click', (e) => {
   const pick = e.target.closest('.spk-pick');
@@ -1967,6 +2103,7 @@ $$('.tab').forEach((tab) => {
     if (name === 'avoid') renderAvoidTable();
     if (name === 'sync') renderSync();
     if (name === 'speaker') renderSpeakers();
+    if (name === 'traceback') renderTraceback();
     if (name === 'bilingual') renderBilingual();
     if (name === 'voicecheck') renderVoiceCheck();
     if (name === 'correct') renderCorrections();

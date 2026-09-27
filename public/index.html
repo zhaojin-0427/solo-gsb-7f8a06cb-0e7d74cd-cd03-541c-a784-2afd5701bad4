@@ -204,6 +204,28 @@
         <div id="spkSummary" class="bi-summary" hidden></div>
       </fieldset>
 
+      <fieldset class="wrap-bar bi-bar tb-bar" id="tbBar">
+        <legend>成片选段回溯（按精确拼接边界拆分选段，依倍速反算到源时间轴）</legend>
+        <div class="bi-input-row">
+          <textarea id="tbInput" spellcheck="false"
+            placeholder="逐行输入 1～20 个成片时间半开区间，每行：起始毫秒 结束毫秒（两端为非负整数且起点小于终点，终点不得越过拼接时间轴精确末端；可用空格或逗号分隔；# 注释，空行忽略）"></textarea>
+          <div class="bi-actions">
+            <button type="button" class="btn btn-primary" id="tbRunBtn">回溯选段</button>
+            <button type="button" class="btn" id="tbClearBtn">清空选段</button>
+            <p class="hint">按当前剪辑段的<b>精确拼接边界</b>把每个选段拆成成片子区间，再依各段倍速反算源区间：
+              源端点保留到<b>四分之一毫秒</b>，直接由精确边界反算（<b>不从已取整的输出字幕时间反推</b>）；
+              切点恰为选段端点时不产生相邻段空行；同一源段重复使用时各次记录均保留。
+              终点不得越过拼接时间轴精确末端（<span id="tbTotalEnd">—</span>）。
+              修改选段或重新生成主结果后旧清单立即清除。</p>
+          </div>
+        </div>
+        <div id="tbErrorBox" class="bi-error-box" hidden>
+          <div class="bi-error-head">⚠️ 成片选段有误（<span id="tbErrorCount"></span>），主结果未受影响：</div>
+          <ul id="tbErrorList" class="error-list"></ul>
+        </div>
+        <div id="tbSummary" class="bi-summary" hidden></div>
+      </fieldset>
+
       <div id="stats" class="stats"></div>
 
       <div class="tabs">
@@ -214,6 +236,7 @@
         <button type="button" class="tab" data-tab="sync">同步校准对照</button>
         <button type="button" class="tab" data-tab="plancompare">方案对照</button>
         <button type="button" class="tab" data-tab="speaker">说话人标注</button>
+        <button type="button" class="tab" data-tab="traceback">成片选段回溯</button>
         <button type="button" class="tab" data-tab="bilingual">双语配对</button>
         <button type="button" class="tab" data-tab="voicecheck">成片口播稿核对</button>
         <button type="button" class="tab" data-tab="correct">源字幕勘误</button>
@@ -437,6 +460,37 @@
           </table>
         </div>
         <pre id="spkPlaceholder" class="srt-output bi-placeholder">尚未标注：在上方「说话人标注」工具条输入标注时段并点击「应用标注」。</pre>
+      </div>
+
+      <div class="tab-body" data-body="traceback" hidden>
+        <p class="hint">
+          按<b>输入行</b>及<b>播放顺序</b>列出每个选段拆出的成片子区间、反算源区间、所属剪辑段序号与倍速：
+          成片子区间按剪辑段的<b>精确拼接边界</b>（半毫秒）拆分，源端点保留到<b>四分之一毫秒</b>
+          （0.25 ms，直接由精确边界反算，<b>不从已取整的输出字幕时间反推</b>）；半开区间端点相接不产生空行，
+          同一源段重复使用时各次记录均保留。CSV 与下表内容一致。
+        </p>
+        <div class="bi-result-actions">
+          <button type="button" class="btn btn-primary" id="tbDownloadBtn" disabled>⬇ 下载清单 output-traceback.csv</button>
+        </div>
+        <div class="table-wrap" id="tbTableWrap" hidden>
+          <table id="tbTable">
+            <thead>
+              <tr>
+                <th>选段行</th>
+                <th>片内序号</th>
+                <th>剪辑段序号</th>
+                <th>剪辑段输入行</th>
+                <th>倍速</th>
+                <th>成片子区间 (ms)</th>
+                <th>成片时长 (ms)</th>
+                <th>源区间 (ms)</th>
+                <th>源时长 (ms)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <pre id="tbPlaceholder" class="srt-output bi-placeholder">尚未回溯：在上方「成片选段回溯」工具条逐行输入「起始毫秒 结束毫秒」并点击「回溯选段」。</pre>
       </div>
 
       <div class="tab-body" data-body="bilingual" hidden>
@@ -694,6 +748,7 @@
   <script src="/src/sync.js"></script>
   <script src="/src/plancompare.js"></script>
   <script src="/src/speaker.js"></script>
+  <script src="/src/traceback.js"></script>
   <script src="/src/readaudit.js"></script>
   <script src="app.js"></script>
 </body>
