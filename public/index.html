@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>字幕剪辑重排工具</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AC%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🎬 字幕剪辑重排工具</h1>
+    <p class="subtitle">本地运行 · 粘贴 SRT 字幕与剪辑段，按播放顺序将字幕映射到拼接时间轴</p>
+  </header>
+
+  <main>
+    <section class="panel input-panel">
+      <div class="grid-2">
+        <div class="field">
+          <div class="field-head">
+            <label for="srtInput">源 SRT 字幕</label>
+            <button type="button" class="btn btn-ghost" id="loadSampleBtn">填入示例</button>
+          </div>
+          <textarea id="srtInput" spellcheck="false"
+            placeholder="1&#10;00:00:00,000 --> 00:00:02,000&#10;第一句字幕&#10;&#10;2&#10;..."></textarea>
+        </div>
+        <div class="field">
+          <div class="field-head">
+            <label for="segInput">剪辑段（按播放顺序，每行：源起ms 源止ms 倍速）</label>
+            <span class="hint">倍速：0.5 / 1 / 2；可用空格或逗号分隔；# 注释</span>
+          </div>
+          <textarea id="segInput" spellcheck="false"
+            placeholder="0 2000 1&#10;5000 8000 2&#10;2000 5000 0.5"></textarea>
+          <p class="hint">源段允许乱序、重叠、重复；重复段会分别生成字幕。</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="runBtn">生成重排字幕</button>
+        <button type="button" class="btn" id="clearBtn">清空</button>
+        <span id="errorSummary" class="error-summary" hidden></span>
+      </div>
+    </section>
+
+    <section id="errorPanel" class="panel error-panel" hidden>
+      <h2>⚠️ 输入有误（<span id="errorCount"></span>）</h2>
+      <div class="error-columns">
+        <div>
+          <h3>SRT 字幕问题</h3>
+          <ul id="srtErrorList" class="error-list"></ul>
+        </div>
+        <div>
+          <h3>剪辑段问题</h3>
+          <ul id="segErrorList" class="error-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="resultPanel" class="panel" hidden>
+      <div class="result-head">
+        <h2>重排结果</h2>
+        <div class="result-actions">
+          <button type="button" class="btn btn-primary" id="downloadBtn">⬇ 下载单语 output.srt</button>
+          <button type="button" class="btn" id="copyBtn">复制 SRT</button>
+        </div>
+      </div>
+
+      <fieldset class="wrap-bar" id="wrapBar">
+        <legend>字幕自动换行</legend>
+        <label class="wrap-field" for="wrapWidth">每行宽度上限
+          <input type="number" id="wrapWidth" min="4" max="40" step="1" value="16" inputmode="numeric" />
+          <span class="hint">4～40（ASCII 计 1，其他字素簇计 2）</span>
+        </label>
+        <label class="wrap-check"><input type="checkbox" id="wrapEnabled" checked /> 启用自动排版（每条最多 3 行，仅调整空白/换行）</label>
+        <span id="wrapSummary" class="wrap-summary"></span>
+        <span class="hint">下载/复制的 SRT 取排版后文本；无解条目保留原文。</span>
+      </fieldset>
+
+      <fieldset class="wrap-bar bi-bar" id="biBar">
+        <legend>双语字幕配对（译文沿用本次剪辑段与倍速重排）</legend>
+        <div class="bi-input-row">
+          <textarea id="transInput" spellcheck="false"
+            placeholder="粘贴与主字幕在同一源时间轴上的译文 SRT（时间轴与源字幕一致，正文为译文）"></textarea>
+          <div class="bi-actions">
+            <button type="button" class="btn btn-primary" id="biPairBtn">配对译文</button>
+            <button type="button" class="btn" id="biClearBtn">清空译文</button>
+            <p class="hint">译文将按当前这组剪辑段与倍速重排后，仅在同一剪辑段内与主字幕做保序一对一配对；
+              候选须有正时长交集，先最大化交集毫秒总和，再取配对数最多、配对序列字典序最小。</p>
+          </div>
+        </div>
+        <div id="biErrorBox" class="bi-error-box" hidden>
+          <div class="bi-error-head">⚠️ 译文 SRT 解析有误（<span id="biErrorCount"></span>），主字幕结果未受影响：</div>
+          <ul id="biErrorList" class="error-list"></ul>
+        </div>
+        <div id="biSummary" class="bi-summary" hidden></div>
+      </fieldset>
+
+      <fieldset class="wrap-bar bi-bar vc-bar" id="vcBar">
+        <legend>成片口播稿核对（与当前未排版输出字幕按播放顺序串接对齐）</legend>
+        <div class="bi-input-row">
+          <textarea id="voiceInput" spellcheck="false"
+            placeholder="粘贴按成片播放顺序整理的口播纯文本（无需带编号与时间；连续英文/数字算一个词元，其他字母数字按字素簇逐个计，忽略空白与标点）"></textarea>
+          <div class="bi-actions">
+            <button type="button" class="btn btn-primary" id="vcRunBtn">核对口播稿</button>
+            <button type="button" class="btn" id="vcCancelBtn" hidden>取消核对</button>
+            <button type="button" class="btn" id="vcClearBtn">清空稿件</button>
+            <p class="hint">保序一对一匹配：先最大化匹配词元数，同分按匹配对序列的稿件位置、字幕位置依次取字典序最小。
+              核对始终以<b>未排版</b>输出字幕为准，全部条目正文先按顺序串接再切分，条目交界处的连续英文/数字会聚成整词（以整词起点所在条目定位）；每侧最多 1500 个词元。
+              核对在后台线程（Web Worker）中进行：提交时固定当前稿件与未排版字幕快照，计算期间可继续编辑稿件、切换页签或取消；
+              再次提交、编辑稿件、重新生成主结果或清空页面都会使旧任务与旧报告立即失效。</p>
+          </div>
+        </div>
+        <div id="vcStatus" class="bi-summary vc-status" hidden></div>
+        <div id="vcErrorBox" class="bi-error-box vc-error-box" hidden></div>
+        <div id="vcSummary" class="bi-summary" hidden></div>
+      </fieldset>
+
+      <fieldset class="wrap-bar avoid-bar ra-bar" id="readAuditBar">
+        <legend>阅读时窗审计（以当前未排版输出字幕为输入，不改动字幕）</legend>
+        <label class="wrap-field" for="raSpeed">阅读速度
+          <input type="number" id="raSpeed" min="1" max="40" step="1" value="10" inputmode="numeric" />
+          <span class="hint">1～40 单位/秒（整数）</span>
+        </label>
+        <span id="raSummary" class="wrap-summary"></span>
+        <span class="hint">阅读量按字素簇计（ASCII 簇 1、其他簇 2、空白不计）；每条只能在其半开显示区间内读，
+          可暂停/继续、同一时刻总速度不超过设定值；按最早截止时间优先分配（同截止按输出编号），
+          以整数记录千分之一单位、不逐毫秒取整，到期未读完记为欠量。调整速度即时重算，重新生成主结果后清除旧结论。</span>
+      </fieldset>
+
+      <fieldset class="wrap-bar avoid-bar" id="avoidBar">
+        <legend>字幕时间避让（当前未排版输出，最多 200 条）</legend>        <label class="wrap-field" for="avoidGap">最小间隔
+          <input type="number" id="avoidGap" min="0" max="500" step="1" value="0" inputmode="numeric" />
+          <span class="hint">0～500 ms</span>
+        </label>
+        <label class="wrap-field" for="avoidShift">最大平移量
+          <input type="number" id="avoidShift" min="0" max="1000" step="1" value="200" inputmode="numeric" />
+          <span class="hint">0～1000 ms</span>
+        </label>
+        <span id="avoidSummary" class="wrap-summary"></span>
+        <span class="hint">每条字幕按整数毫秒整体平移（时长、编号、顺序、正文不变），新起止不越出所属剪辑段输出区间，
+          相邻输出（含跨剪辑段）至少相隔设定间隔；先最小化总平移，同分取新起点序列字典序最小。</span>
+      </fieldset>
+
+      <fieldset class="wrap-bar bi-bar sync-bar" id="syncBar">
+        <legend>成片同步校准（以当前未排版输出字幕的毫秒时间为旧轴）</legend>
+        <div class="bi-input-row">
+          <textarea id="syncAnchorInput" spellcheck="false"
+            placeholder="逐行输入 2～10 个同步锚点，每行：旧毫秒 新毫秒（两列均为非负整数且各自严格递增；可用空格或逗号分隔；# 注释，空行忽略）"></textarea>
+          <div class="bi-actions">
+            <button type="button" class="btn btn-primary" id="syncRunBtn">应用校准</button>
+            <button type="button" class="btn" id="syncClearBtn">清空锚点</button>
+            <p class="hint">相邻锚点间按<b>线性比例</b>映射；首锚点之前与末锚点之后沿用最近锚点的<b>固定偏移</b>。
+              逐条映射输出字幕起止，全程以整数分子/分母保留精度，最后才对边界分别四舍五入为整数毫秒；
+              正文、编号、顺序与来源对应关系不变。若校准后出现负时刻或取整后零长字幕，将指出输出编号并禁止校准版导出（主结果不受影响）。
+              修改锚点或重新生成主结果后，旧校准立即失效。</p>
+          </div>
+        </div>
+        <div id="syncErrorBox" class="bi-error-box" hidden>
+          <div class="bi-error-head">⚠️ 同步锚点有误（<span id="syncErrorCount"></span>），主结果未受影响：</div>
+          <ul id="syncErrorList" class="error-list"></ul>
+        </div>
+        <div id="syncSummary" class="bi-summary" hidden></div>
+      </fieldset>
+
+      <fieldset class="wrap-bar bi-bar pc-bar" id="pcBar">
+        <legend>剪辑方案对照（方案 A 为当前结果的源 SRT 与剪辑段）</legend>
+        <div class="bi-input-row">
+          <textarea id="planBInput" spellcheck="false"
+            placeholder="输入方案 B 的剪辑段（格式同主剪辑段：每行 源起ms 源止ms 倍速；# 之后为注释，空行忽略）"></textarea>
+          <div class="bi-actions">
+            <button type="button" class="btn btn-primary" id="pcRunBtn">对照方案</button>
+            <button type="button" class="btn" id="pcClearBtn">清空方案 B</button>
+            <p class="hint">对每条源字幕，把两套剪辑段与其半开源区间的交集端点合并排序，切成源时间轴上的连续小区间；
+              逐区间统计两方案的<b>覆盖次数</b>（重叠/重复段各自计入）与按各段倍速折算的<b>精确播放时长</b>
+              （半毫秒精度，不先取整），只列出覆盖次数或播放时长不同的区间，并汇总每条源字幕的播放时长差
+              （未命中、重叠、重复源段均计入）。方案 B 沿用现有剪辑段解析与校验规则，错误只显示在本工具条内，
+              不影响主结果；修改源 SRT、任一方案或重新生成主结果后，旧对照立即失效。</p>
+          </div>
+        </div>
+        <div id="pcErrorBox" class="bi-error-box" hidden>
+          <div class="bi-error-head">⚠️ 方案 B 剪辑段解析有误（<span id="pcErrorCount"></span>），主结果未受影响：</div>
+          <ul id="pcErrorList" class="error-list"></ul>
+        </div>
+        <div id="pcSummary" class="bi-summary" hidden></div>
+      </fieldset>
+
+      <fieldset class="wrap-bar bi-bar spk-bar" id="spkBar">
+        <legend>说话人标注（源时间轴时段，沿用本次剪辑段与倍速映射到成片）</legend>
+        <div class="bi-input-row">
+          <textarea id="spkInput" spellcheck="false"
+            placeholder="逐行输入源时间轴上的说话人时段，每行：起始毫秒 结束毫秒 说话人ID（ID 限 1～20 位 ASCII 字母、数字、下划线或连字符；时间为非负整数且起点小于终点；可用空格或逗号分隔；# 注释，空行忽略）"></textarea>
+          <div class="bi-actions">
+            <button type="button" class="btn btn-primary" id="spkRunBtn">应用标注</button>
+            <button type="button" class="btn" id="spkClearBtn">清空标注</button>
+            <p class="hint">标注时段按当前剪辑段与倍速映射到成片（边界四舍五入规则与主重排一致）；不同说话人的时段可重叠。
+              对每条<b>未排版</b>输出字幕，仅在<b>同一剪辑段</b>内统计与各说话人时段的正时长交集（同一人的重叠时段先取并集），
+              交集最长者为该字幕的说话人；最长并列时列出候选逐条裁决，未裁决前禁用标注版导出；无交集者保持无标签。
+              修改标注或重新生成主结果后，旧归属、裁决与标注版导出立即失效。</p>
+          </div>
+        </div>
+        <div id="spkErrorBox" class="bi-error-box" hidden>
+          <div class="bi-error-head">⚠️ 说话人标注有误（<span id="spkErrorCount"></span>），主结果未受影响：</div>
+          <ul id="spkErrorList" class="error-list"></ul>
+        </div>
+        <div id="spkSummary" class="bi-summary" hidden></div>
+      </fieldset>
+
+      <div id="stats" class="stats"></div>
+
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="mapping">源 → 输出 对应关系</button>
+        <button type="button" class="tab" data-tab="compare">排版逐条对照</button>
+        <button type="button" class="tab" data-tab="readaudit">阅读时窗审计</button>
+        <button type="button" class="tab" data-tab="avoid">时间避让对照</button>
+        <button type="button" class="tab" data-tab="sync">同步校准对照</button>
+        <button type="button" class="tab" data-tab="plancompare">方案对照</button>
+        <button type="button" class="tab" data-tab="speaker">说话人标注</button>
+        <button type="button" class="tab" data-tab="bilingual">双语配对</button>
+        <button type="button" class="tab" data-tab="voicecheck">成片口播稿核对</button>
+        <button type="button" class="tab" data-tab="correct">源字幕勘误</button>
+        <button type="button" class="tab" data-tab="output">输出字幕列表</button>
+        <button type="button" class="tab" data-tab="timeline">剪辑段时间轴</button>
+        <button type="button" class="tab" data-tab="raw">SRT 文本</button>
+      </div>
+
+      <div class="tab-body" data-body="mapping">
+        <p class="hint">
+          状态：<b class="tag tag-used">已采用</b> 生成输出；
+          <b class="tag tag-missed">未命中丢弃</b> 与任何剪辑段无交集；
+          <b class="tag tag-zero">零长舍弃</b> 有交集但映射四舍五入后不足 1ms。
+        </p>
+        <div class="table-wrap">
+          <table id="sourceTable">
+            <thead>
+              <tr>
+                <th>源序号</th>
+                <th>源时间区间</th>
+                <th>文本（保留多行）</th>
+                <th>状态</th>
+                <th>→ 输出编号</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="droppedWrap" hidden>
+          <h3>舍弃的零长片段（<span id="droppedCount"></span>）</h3>
+          <div class="table-wrap">
+            <table id="droppedTable">
+              <thead>
+                <tr>
+                  <th>源序号</th>
+                  <th>所属剪辑段</th>
+                  <th>倍速</th>
+                  <th>源内交集 (ms)</th>
+                  <th>精确映射区间 (ms)</th>
+                  <th>原因</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-body" data-body="compare" hidden>
+        <p class="hint">
+          以当前输出字幕为输入逐条排版：<b>仅调整空白与换行</b>，编号、时间与来源对应关系不变；
+          合法断点中先取最少行数，再最小化各行剩余宽度平方和，同分取靠前断点。
+          <b class="tag tag-warn">无解</b> 的条目保留原文并在右侧标出原因。
+        </p>
+        <div class="table-wrap">
+          <table id="compareTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>时间区间</th>
+                <th>原文（排版前）</th>
+                <th>排版结果 / 无解原因</th>
+                <th>行宽（上限 <span id="wrapWidthHead">16</span>）</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-body" data-body="readaudit" hidden>
+        <p class="hint">
+          以当前<b>未排版</b>输出字幕为输入（自动换行/排版不影响审计），把每条字幕视为可暂停、继续的单人阅读任务：
+          阅读量按字素簇计（<b>ASCII 簇计 1，其他簇计 2，空白不计</b>）；每条只能在其<b>半开显示区间</b>
+          <b>[起, 止)</b> 内阅读（端点相接不算重叠），同一时刻总速度不超过设定值。调度按<b>最早截止时间优先</b>
+          （截止相同按输出编号），可被更早截止的字幕抢占、暂停后继续；阅读量以<b>千分之一单位的整数</b>记录、
+          <b>不逐毫秒取整</b>；到截止仍未读完的部分记为<b>欠量</b>并移除。审计<b>不改动字幕</b>，
+          不影响任何下载；调整速度即时重算，重新生成主结果后旧结论清除。
+        </p>
+        <div id="raMissBox" class="bi-error-box vc-error-box" hidden></div>
+        <div class="table-wrap" id="raTableWrap" hidden>
+          <table id="raTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>半开显示区间</th>
+                <th>时长(ms)</th>
+                <th>需求量</th>
+                <th>已读量</th>
+                <th>欠量</th>
+                <th>状态</th>
+                <th>文本（未排版）</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <pre id="raPlaceholder" class="srt-output bi-placeholder">设置 1～40 的整数阅读速度后即自动审计。</pre>
+      </div>
+
+      <div class="tab-body" data-body="avoid" hidden>
+        <p class="hint">
+          以当前<b>未排版</b>输出字幕为输入做整体平移避让：每条只按整数毫秒平移（时长、编号、顺序、正文不变），
+          新起止不越出所属剪辑段取整后的输出区间，相邻输出（含跨剪辑段）至少相隔设定间隔；
+          在全部可行排程中先最小化平移绝对值总和，同分取新起点序列字典序最小。
+          自动换行/排版设置不影响避让计算；避让结果也不影响其他下载与核对功能。
+        </p>
+        <div class="bi-result-actions">
+          <button type="button" class="btn btn-primary" id="avoidDownloadBtn" disabled>⬇ 下载避让版 output-avoid.srt</button>
+          <button type="button" class="btn" id="avoidCopyBtn" disabled>复制避让版 SRT</button>
+        </div>
+        <div id="avoidFailBox" class="bi-error-box vc-error-box" hidden></div>
+        <div class="table-wrap" id="avoidTableWrap" hidden>
+          <table id="avoidTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>段</th>
+                <th>原时间区间</th>
+                <th>新时间区间</th>
+                <th>位移 (ms)</th>
+                <th>时长(ms)</th>
+                <th>文本（未排版）</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <pre id="avoidPlaceholder" class="srt-output bi-placeholder">尚未计算时间避让。</pre>
+      </div>
+
+      <div class="tab-body" data-body="sync" hidden>
+        <p class="hint">
+          以当前<b>未排版</b>输出字幕的毫秒时间为旧轴，按同步锚点把每条字幕的起止映射到成片时间轴：
+          相邻锚点间按线性比例映射，首锚点之前与末锚点之后沿用最近锚点的固定偏移；
+          全程以整数分子/分母保留精度，最后才对边界分别四舍五入为整数毫秒（0.5 向上）；
+          正文、编号、顺序与来源对应关系不变。校准后出现<b>负时刻</b>或<b>取整后零长</b>的字幕
+          会指出输出编号并禁止校准版导出（主结果不受影响）。
+        </p>
+        <div class="bi-result-actions">
+          <button type="button" class="btn btn-primary" id="syncDownloadBtn" disabled>⬇ 下载校准版 output-synced.srt</button>
+          <button type="button" class="btn" id="syncCopyBtn" disabled>复制校准版 SRT</button>
+        </div>
+        <div id="syncFailBox" class="bi-error-box vc-error-box" hidden></div>
+        <div class="table-wrap" id="syncTableWrap" hidden>
+          <table id="syncTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>原时间区间</th>
+                <th>校准时间区间</th>
+                <th>起点偏移 (ms)</th>
+                <th>终点偏移 (ms)</th>
+                <th>时长 原→新 (ms)</th>
+                <th>文本（未排版）</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <pre id="syncPlaceholder" class="srt-output bi-placeholder">尚未校准：在上方「成片同步校准」工具条输入同步锚点并点击「应用校准」。</pre>
+      </div>
+
+      <div class="tab-body" data-body="plancompare" hidden>
+        <p class="hint">
+          方案 A 为当前结果的源 SRT 与剪辑段，方案 B 为「剪辑方案对照」工具条中输入的剪辑段。
+          对每条源字幕，两套剪辑段与其半开源区间的交集端点合并排序后切成连续小区间；
+          仅列出<b>覆盖次数或精确播放时长不同</b>的区间（半毫秒精度，不先取整），并汇总每条源字幕的播放时长差；
+          未命中、重叠与重复源段均计入。
+        </p>
+        <div id="pcReportWrap" hidden>
+          <h3>每条源字幕播放时长汇总（共 <span id="pcCueCount">0</span> 条，差异 <span id="pcDiffCueCount">0</span> 条）</h3>
+          <div class="table-wrap">
+            <table id="pcCueTable">
+              <thead>
+                <tr>
+                  <th>源序号</th>
+                  <th>源时间区间</th>
+                  <th>文本</th>
+                  <th>方案 A 播放时长 (ms)</th>
+                  <th>方案 B 播放时长 (ms)</th>
+                  <th>时长差 A−B (ms)</th>
+                  <th>差异区间</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <h3>差异区间明细（<span id="pcDiffIntervalCount">0</span>）</h3>
+          <div id="pcDetailList"></div>
+        </div>
+        <pre id="pcPlaceholder" class="srt-output bi-placeholder">尚未对照：在上方「剪辑方案对照」工具条输入方案 B 的剪辑段并点击「对照方案」。</pre>
+      </div>
+
+      <div class="tab-body" data-body="speaker" hidden>
+        <p class="hint">
+          标注时段已按当前剪辑段与倍速映射到成片（边界四舍五入与主重排一致）；对每条<b>未排版</b>输出字幕，
+          仅统计<b>同一剪辑段</b>内与各说话人时段的正时长交集（同一人的重叠时段先取并集），交集最长者归属该字幕；
+          最长并列需逐条裁决，未裁决前禁用标注版导出；无交集者保持无标签。
+          标注版 SRT 中已归属字幕的正文前加「[ID] 」，时间、编号及原正文其余部分不变。
+        </p>
+        <div class="bi-result-actions">
+          <button type="button" class="btn btn-primary" id="spkDownloadBtn" disabled>⬇ 下载标注版 output-speakers.srt</button>
+          <button type="button" class="btn" id="spkCopyBtn" disabled>复制标注版 SRT</button>
+        </div>
+        <div id="spkTieBox" class="bi-error-box vc-error-box" hidden></div>
+        <div class="table-wrap" id="spkTableWrap" hidden>
+          <table id="spkTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>输出时间区间</th>
+                <th>段</th>
+                <th>各说话人交集 (ms)</th>
+                <th>归属</th>
+                <th>文本（未排版）</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <pre id="spkPlaceholder" class="srt-output bi-placeholder">尚未标注：在上方「说话人标注」工具条输入标注时段并点击「应用标注」。</pre>
+      </div>
+
+      <div class="tab-body" data-body="bilingual" hidden>
+        <p class="hint">
+          仅在同一剪辑段内，按输出起点、同起点按原字幕顺序做保持顺序的一对一配对；候选须有正时长交集。
+          下载的双语 SRT 以<b>主字幕的时间与编号</b>为准，正文先主文后译文；未配对主字幕保留单语，
+          未配对译文不进入文件。启用自动换行时主文取排版后文本（译文不重新排版）。
+        </p>
+        <div class="bi-result-actions">
+          <button type="button" class="btn btn-primary" id="biDownloadBtn" disabled>⬇ 下载双语 output-bilingual.srt</button>
+          <button type="button" class="btn" id="biCopyBtn" disabled>复制双语 SRT</button>
+        </div>
+
+        <h3>配对结果（<span id="biPairedCount">0</span>）</h3>
+        <div class="table-wrap">
+          <table id="biPairTable">
+            <thead>
+              <tr>
+                <th>主 #</th>
+                <th>主时间区间</th>
+                <th>段</th>
+                <th>主字幕文本</th>
+                <th>译文（源序 / 输出 #）</th>
+                <th>交集(ms)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>未配对译文（<span id="biUnpairedTransCount">0</span>，不进入双语 SRT）</h3>
+        <div class="table-wrap">
+          <table id="biUnpairedTransTable">
+            <thead>
+              <tr>
+                <th>译文源序号</th>
+                <th>译文输出 #</th>
+                <th>段</th>
+                <th>译文时间区间</th>
+                <th>文本</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div id="biMissedTransWrap" hidden>
+          <h3>译文源字幕未进入重排（<span id="biMissedTransCount">0</span>：未命中剪辑段 / 零长舍弃）</h3>
+          <div class="table-wrap">
+            <table id="biMissedTransTable">
+              <thead>
+                <tr>
+                  <th>译文源序号</th>
+                  <th>源时间区间</th>
+                  <th>状态</th>
+                  <th>文本</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <h3>未配对主字幕（<span id="biUnpairedMainCount">0</span>，双语 SRT 中保留单语）</h3>
+        <div class="table-wrap">
+          <table id="biUnpairedMainTable">
+            <thead>
+              <tr>
+                <th>主 #</th>
+                <th>主时间区间</th>
+                <th>段</th>
+                <th>文本</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>双语 SRT 预览</h3>
+        <pre id="biSrtOutput" class="srt-output bi-placeholder">尚未粘贴译文并配对。</pre>
+      </div>
+
+      <div class="tab-body" data-body="voicecheck" hidden>
+        <p class="hint">
+          稿件与当前<b>未排版</b>输出字幕按播放顺序串接后做保序一对一匹配：连续 ASCII 字母数字算一个词元，
+          其他 Unicode 字母/数字按字素簇逐个计，忽略空白、标点与符号，ASCII 大小写不敏感。
+          先最大化匹配词元数；同分按匹配对序列的稿件位置、字幕位置依次取字典序最小。
+          字幕侧编号/时间可点击跳转到「输出字幕列表」；稿件侧只用相邻（前/后）已匹配字幕定位。
+        </p>
+        <div id="vcReportWrap" hidden>
+          <h3>稿件未匹配片段（<span id="vcScriptFragCount">0</span>，口播稿中字幕未出现的内容）</h3>
+          <div class="table-wrap">
+            <table id="vcScriptFragTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>稿件片段原文</th>
+                  <th>前一已匹配字幕</th>
+                  <th>后一已匹配字幕</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <h3>字幕多出片段（<span id="vcSubFragCount">0</span>，成片口播稿未念到的字幕内容）</h3>
+          <div class="table-wrap">
+            <table id="vcSubFragTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>输出编号</th>
+                  <th>输出时间区间</th>
+                  <th>多出片段原文</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <pre id="vcPlaceholder" class="srt-output bi-placeholder">尚未核对：在上方「成片口播稿核对」工具条粘贴口播纯文本并点击「核对口播稿」。</pre>
+      </div>
+
+      <div class="tab-body" data-body="correct" hidden>
+        <p class="hint">
+          对输出条目的<b>未排版正文</b>提交修订，按源字幕归并：同一源字幕因跨切点拆分或重复剪辑产生的
+          多条输出<b>共享同一份源文修订</b>；同源提交不同正文会进入候选裁决，<b>选定一版前不会生效</b>
+          （不会以最后一次编辑覆盖），且未裁决前禁止导出与预览。修订正文不能为空、不得含空白行；
+          未修订的源字幕（含未进入输出的）保持原文，源时间与条目顺序不变。
+        </p>
+        <div class="corr-actions">
+          <button type="button" class="btn btn-primary" id="corrDownloadBtn" disabled>⬇ 下载勘误后源 output-source-corrected.srt</button>
+          <button type="button" class="btn" id="corrCopyBtn" disabled>复制勘误后源 SRT</button>
+          <span id="corrSummary" class="corr-summary"></span>
+        </div>
+        <div id="corrConflictBox" class="corr-conflict-box" hidden>
+          <div class="corr-conflict-head">⚠️ <span id="corrConflictCount">0</span> 组同源输出提交了不同正文：请各选定一版（不会以最后一次编辑覆盖），裁决前禁止导出与预览。</div>
+          <div id="corrConflictList"></div>
+        </div>
+
+        <h3>输出条目勘误（按源字幕归并）</h3>
+        <div class="table-wrap">
+          <table id="corrTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>输出时间区间</th>
+                <th>源序号</th>
+                <th>未排版正文（原文）</th>
+                <th>勘误状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>已提交修订（<span id="corrCount">0</span>）</h3>
+        <div class="table-wrap">
+          <table id="corrRevisionsTable">
+            <thead>
+              <tr>
+                <th>源序号</th>
+                <th>源时间区间</th>
+                <th>原文</th>
+                <th>修订后正文</th>
+                <th>涉及输出</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>勘误后源字幕重排预览（沿用当前剪辑段）</h3>
+        <p class="hint" id="corrPreviewHint">提交勘误后，将按当前剪辑段对勘误后的源字幕重新重排并在此预览。</p>
+        <div class="table-wrap" id="corrPreviewWrap" hidden>
+          <table id="corrPreviewTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>输出时间区间</th>
+                <th>段</th>
+                <th>源序号</th>
+                <th>文本</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>勘误后源 SRT 文本</h3>
+        <pre id="corrSrtOutput" class="srt-output bi-placeholder">尚未提交勘误。</pre>
+      </div>
+
+      <div class="tab-body" data-body="output" hidden>
+        <div class="table-wrap">
+          <table id="outputTable">
+            <thead>
+              <tr>
+                <th>输出编号</th>
+                <th>输出时间区间</th>
+                <th>时长(ms)</th>
+                <th>源序号 / 段</th>
+                <th>倍速</th>
+                <th>源内交集 (ms)</th>
+                <th>文本</th>
+                <th>勘误</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-body" data-body="timeline" hidden>
+        <div class="table-wrap">
+          <table id="timelineTable">
+            <thead>
+              <tr>
+                <th>播放顺序</th>
+                <th>输入行</th>
+                <th>源起 (ms)</th>
+                <th>源止 (ms)</th>
+                <th>倍速</th>
+                <th>输出起点 (ms)</th>
+                <th>输出终点 (ms)</th>
+                <th>段时长（精确 ms）</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="hint" id="totalLine"></p>
+      </div>
+
+      <div class="tab-body" data-body="raw" hidden>
+        <p class="hint" id="rawHint"></p>
+        <pre id="srtOutput" class="srt-output"></pre>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>所有处理均在本地完成，不上传任何外部服务。</span>
+  </footer>
+
+  <script src="/src/srt.js"></script>
+  <script src="/src/segments.js"></script>
+  <script src="/src/wrap.js"></script>
+  <script src="/src/pair.js"></script>
+  <script src="/src/correct.js"></script>
+  <script src="/src/vcrunner.js"></script>
+  <script src="/src/avoid.js"></script>
+  <script src="/src/sync.js"></script>
+  <script src="/src/plancompare.js"></script>
+  <script src="/src/speaker.js"></script>
+  <script src="/src/readaudit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
