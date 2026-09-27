@@ -414,6 +414,11 @@ h3 { font-size: 14px; margin: 18px 0 8px; }
 .spk-picks { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px; }
 .spk-picked { border-color: var(--green); color: var(--green); }
 
+/* ---- 成片选段回溯 ---- */
+.rt-sel-group { margin: 0 0 18px; }
+.rt-sel-group h4 { margin: 0 0 8px; font-size: 13.5px; }
+.rt-sel-group h4 .dim { font-weight: 400; }
+
 /* ---- 源字幕勘误 ---- */
 .corr-actions {
   display: flex;

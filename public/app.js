@@ -82,6 +82,11 @@ let spkData = null;
 let spkChoices = new Map();
 let spkSrt = '';
 
+// 成片选段回溯状态：rtData 为 Retrace.computeRetrace 的结果（浏览器内计算，src/retrace.js），
+// rtCsv 为当前清单的同内容 CSV 文本；修改选段或重新生成主结果后旧清单立即失效。
+let rtData = null;
+let rtCsv = '';
+
 // 阅读时窗审计状态：raData 为 ReadAudit.auditReading 的结果（浏览器内计算，src/readaudit.js），
 // 以当前未排版输出字幕为输入；调整速度即时重算，重新生成主结果后旧结论清除。
 let raData = null;
@@ -167,6 +172,7 @@ function render(data) {
   resetPlanCompare();
   resetSync();
   resetSpeakers();
+  resetRetrace();
   applyReadAudit();
   applyWrap();
   // 重新生成主结果时清空旧排程，并按当前避让参数对新结果重算
@@ -1109,6 +1115,130 @@ async function copySpkSrt() {
   setTimeout(() => { btn.textContent = old; }, 1500);
 }
 
+// ---- 成片选段回溯（精确拼接边界拆分 + 依倍速反算源时间轴；逻辑在 src/retrace.js，双端通用，不请求后端） ----
+
+/** 清空旧清单与回溯视图（选段文本保留；placeholderText 为占位提示）。 */
+function resetRetrace(placeholderText) {
+  rtData = null;
+  rtCsv = '';
+  $('#rtErrorBox').hidden = true;
+  $('#rtSummary').hidden = true;
+  $('#rtSummary').innerHTML = '';
+  $('#rtDownloadBtn').disabled = true;
+  $('#rtList').innerHTML = '';
+  const ph = $('#rtPlaceholder');
+  ph.hidden = false;
+  ph.textContent = placeholderText || '主字幕结果已更新，请重新点击「回溯选段」。';
+}
+
+/** 成片选段错误：定位到具体行，只显示在回溯工具条内（主结果与各项下载不受影响）。 */
+function showRetraceErrors(errors) {
+  $('#rtErrorList').innerHTML = errors.map((e) => `<li><span class="loc">${
+    e.line ? `选段第 ${e.line} 行` : '成片选段'
+  }</span>${escapeHtml(e.message)}</li>`).join('');
+  $('#rtErrorCount').textContent = errors.length;
+  $('#rtErrorBox').hidden = false;
+}
+
+/**
+ * 回溯选段：解析成片选段（src/retrace.js；终点以拼接时间轴精确末端为上界，
+ * 数量限 1～20 个），错误只显示在工具条内；通过后按剪辑段精确拼接边界拆分、
+ * 依倍速反算源时间轴（源端点保留至四分之一毫秒），刷新清单与同内容 CSV。
+ */
+function runRetrace() {
+  if (!lastData) return;
+  resetRetrace(); // 再次提交：旧清单立即失效
+  const text = $('#rtInput').value;
+  if (!text.trim()) {
+    showRetraceErrors([{ line: 0, message: '成片选段内容为空' }]);
+    $('#rtPlaceholder').textContent = '成片选段有误，未生成回溯清单。';
+    return;
+  }
+  const { selections, errors } = window.Retrace.parseSelections(text, lastData.stats.totalDurationExactMs);
+  if (errors.length > 0) {
+    showRetraceErrors(errors);
+    $('#rtPlaceholder').textContent = '成片选段有误，未生成回溯清单。';
+    return;
+  }
+  $('#rtErrorBox').hidden = true;
+  const r = window.Retrace.computeRetrace(selections, lastData.timeline);
+  if (!r.ok) {
+    $('#rtSummary').hidden = false;
+    $('#rtSummary').innerHTML = `<span class="wrap-fail">⚠ ${escapeHtml(r.message)}</span>`;
+    $('#rtPlaceholder').textContent = '未生成回溯清单。';
+    return;
+  }
+  rtData = r;
+  rtCsv = window.Retrace.buildRetraceCsv(r.rows);
+  $('#rtDownloadBtn').disabled = false;
+  renderRetrace();
+}
+
+/** 渲染回溯清单：按输入行分组、组内按播放顺序列出成片子区间/源区间/剪辑段/倍速。 */
+function renderRetrace() {
+  if (!rtData || !lastData) return;
+  const r = rtData;
+  const fmtHalf = window.Retrace.formatHalfMs;
+  const fmtQuarter = window.Retrace.formatQuarterMs;
+
+  $('#rtSummary').hidden = false;
+  $('#rtSummary').innerHTML = `<span class="bi-ok">✓ ${r.selectionCount} 个选段</span> · `
+    + `子区间共 <b>${r.rowCount}</b> 个（按输入行及播放顺序排列）· 可下载同内容 CSV`;
+
+  // 按输入行分组（rows 已为输入行及播放顺序）
+  const rowsBySel = new Map();
+  for (const row of r.rows) {
+    let g = rowsBySel.get(row.selIndex);
+    if (!g) {
+      g = [];
+      rowsBySel.set(row.selIndex, g);
+    }
+    g.push(row);
+  }
+  $('#rtList').innerHTML = r.selections.map((sel, selIndex) => {
+    const rows = rowsBySel.get(selIndex) || [];
+    const trs = rows.length
+      ? rows.map((row) => `<tr>
+        <td class="mono">${fmtHalf(row.outStartHalf)} → ${fmtHalf(row.outEndHalf)}</td>
+        <td class="mono">${fmtQuarter(row.srcStartQuarter)} → ${fmtQuarter(row.srcEndQuarter)}</td>
+        <td class="num">段 ${row.segOrder + 1}<br><span class="dim">输入第 ${row.segLine} 行</span></td>
+        <td><span class="tag tag-speed">${row.speed}×</span></td>
+      </tr>`).join('')
+      : '<tr><td colspan="4" class="dim">无覆盖子区间</td></tr>';
+    return `<div class="rt-sel-group">
+      <h4>选段第 ${sel.line} 行：<span class="mono">${fmtNum(sel.start)} → ${fmtNum(sel.end)} ms</span>
+        <span class="dim">（${rows.length} 个子区间）</span></h4>
+      <div class="table-wrap">
+        <table class="rt-table">
+          <thead>
+            <tr>
+              <th>成片子区间 (ms)</th>
+              <th>源区间 (ms)</th>
+              <th>剪辑段</th>
+              <th>倍速</th>
+            </tr>
+          </thead>
+          <tbody>${trs}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('');
+  $('#rtPlaceholder').hidden = true;
+}
+
+function downloadRetraceCsv() {
+  if (!rtCsv) return;
+  const blob = new Blob([rtCsv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'output-retrace.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ---- 阅读时窗审计（EDF；逻辑在 src/readaudit.js，双端通用，不请求后端，不改动字幕） ----
 
 /** 清空旧审计结论与视图（速度输入保留；placeholderText 为占位提示）。 */
@@ -1789,6 +1919,7 @@ $('#clearBtn').addEventListener('click', () => {
   resetPlanCompare();
   resetSync();
   resetSpeakers();
+  resetRetrace('页面已清空。');
   resetReadAudit('页面已清空。');
 });
 $('#loadSampleBtn').addEventListener('click', () => {
@@ -1938,6 +2069,19 @@ $('#spkInput').addEventListener('input', () => {
 });
 $('#spkDownloadBtn').addEventListener('click', downloadSpkSrt);
 $('#spkCopyBtn').addEventListener('click', copySpkSrt);
+
+// 成片选段回溯：提交/清空；修改选段或重新生成主结果后旧清单立即失效
+$('#rtRunBtn').addEventListener('click', runRetrace);
+$('#rtClearBtn').addEventListener('click', () => {
+  $('#rtInput').value = '';
+  resetRetrace('尚未回溯：在上方「成片选段回溯」工具条输入成片选段并点击「回溯选段」。');
+});
+$('#rtInput').addEventListener('input', () => {
+  if (rtData || !$('#rtErrorBox').hidden) {
+    resetRetrace('选段已修改，请重新点击「回溯选段」。');
+  }
+});
+$('#rtDownloadBtn').addEventListener('click', downloadRetraceCsv);
 // 并列裁决：逐条选定候选说话人（可改选），全部裁决后自动解除导出禁用
 document.addEventListener('click', (e) => {
   const pick = e.target.closest('.spk-pick');
@@ -1967,6 +2111,7 @@ $$('.tab').forEach((tab) => {
     if (name === 'avoid') renderAvoidTable();
     if (name === 'sync') renderSync();
     if (name === 'speaker') renderSpeakers();
+    if (name === 'retrace') renderRetrace();
     if (name === 'bilingual') renderBilingual();
     if (name === 'voicecheck') renderVoiceCheck();
     if (name === 'correct') renderCorrections();

@@ -204,6 +204,27 @@
         <div id="spkSummary" class="bi-summary" hidden></div>
       </fieldset>
 
+      <fieldset class="wrap-bar bi-bar rt-bar" id="rtBar">
+        <legend>成片选段回溯（按剪辑段精确拼接边界拆开，依倍速反算到源时间轴）</legend>
+        <div class="bi-input-row">
+          <textarea id="rtInput" spellcheck="false"
+            placeholder="逐行输入 1～20 个成片时间半开区间，每行：起始毫秒 结束毫秒（两端均为非负整数且起点小于终点；终点不得越过拼接时间轴精确末端；可用空格或逗号分隔；# 注释，空行忽略）"></textarea>
+          <div class="bi-actions">
+            <button type="button" class="btn btn-primary" id="rtRunBtn">回溯选段</button>
+            <button type="button" class="btn" id="rtClearBtn">清空选段</button>
+            <p class="hint">按现有剪辑段的<b>精确拼接边界</b>（半毫秒精度）拆开每个选段，各子区间依所属段倍速反算到源时间轴，
+              源端点保留至<b>四分之一毫秒</b>（不从已取整的输出字幕时间反推）；切点恰为选段端点时相邻段不产生空行。
+              清单按输入行及播放顺序列出成片子区间、源区间、剪辑段序号与倍速，同一源段重复使用时各次记录均保留，可下载同内容 CSV。
+              修改选段或重新生成主结果后，旧清单立即失效。</p>
+          </div>
+        </div>
+        <div id="rtErrorBox" class="bi-error-box" hidden>
+          <div class="bi-error-head">⚠️ 成片选段有误（<span id="rtErrorCount"></span>），主结果未受影响：</div>
+          <ul id="rtErrorList" class="error-list"></ul>
+        </div>
+        <div id="rtSummary" class="bi-summary" hidden></div>
+      </fieldset>
+
       <div id="stats" class="stats"></div>
 
       <div class="tabs">
@@ -214,6 +235,7 @@
         <button type="button" class="tab" data-tab="sync">同步校准对照</button>
         <button type="button" class="tab" data-tab="plancompare">方案对照</button>
         <button type="button" class="tab" data-tab="speaker">说话人标注</button>
+        <button type="button" class="tab" data-tab="retrace">成片选段回溯</button>
         <button type="button" class="tab" data-tab="bilingual">双语配对</button>
         <button type="button" class="tab" data-tab="voicecheck">成片口播稿核对</button>
         <button type="button" class="tab" data-tab="correct">源字幕勘误</button>
@@ -437,6 +459,19 @@
           </table>
         </div>
         <pre id="spkPlaceholder" class="srt-output bi-placeholder">尚未标注：在上方「说话人标注」工具条输入标注时段并点击「应用标注」。</pre>
+      </div>
+
+      <div class="tab-body" data-body="retrace" hidden>
+        <p class="hint">
+          每个选段按剪辑段的<b>精确拼接边界</b>（半毫秒精度）拆开，各子区间依所属段倍速反算到源时间轴，
+          源端点保留至<b>四分之一毫秒</b>（不从已取整的输出字幕时间反推）；切点恰为选段端点时相邻段不产生空行；
+          同一源段重复使用时各次记录均保留。清单按输入行及播放顺序排列，可下载同内容 CSV。
+        </p>
+        <div class="bi-result-actions">
+          <button type="button" class="btn btn-primary" id="rtDownloadBtn" disabled>⬇ 下载选段回溯 output-retrace.csv</button>
+        </div>
+        <div id="rtList"></div>
+        <pre id="rtPlaceholder" class="srt-output bi-placeholder">尚未回溯：在上方「成片选段回溯」工具条输入成片选段并点击「回溯选段」。</pre>
       </div>
 
       <div class="tab-body" data-body="bilingual" hidden>
@@ -694,6 +729,7 @@
   <script src="/src/sync.js"></script>
   <script src="/src/plancompare.js"></script>
   <script src="/src/speaker.js"></script>
+  <script src="/src/retrace.js"></script>
   <script src="/src/readaudit.js"></script>
   <script src="app.js"></script>
 </body>

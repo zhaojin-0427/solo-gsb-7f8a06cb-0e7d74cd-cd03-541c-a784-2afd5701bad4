@@ -31,11 +31,13 @@ const MIN_SPEED = 1;
 const MAX_SPEED = 40;
 const MILLI = 1000; // 1 阅读单位 = 1000 毫单位（整数精度）
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+// 注：浏览器端与 src/wrap.js 等同页加载，顶层 const 共享全局词法环境，
+// 故内部字素簇切分器使用模块专属命名，避免跨脚本重复声明冲突。
+const raSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 /** 按字素簇切分字符串（与 src/wrap.js 一致）。 */
 function graphemes(s) {
-  return Array.from(segmenter.segment(String(s ?? '')), (x) => x.segment);
+  return Array.from(raSegmenter.segment(String(s ?? '')), (x) => x.segment);
 }
 
 /** 单个字素簇是否计为阅读量：空白（\s，含空格/制表/换行/NBSP）不计。 */
